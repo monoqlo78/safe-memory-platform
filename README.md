@@ -14,6 +14,33 @@ Dockerized local-first memory infrastructure for AI agents.
 > - License: [MIT](LICENSE)
 > - Demo video: _add your YouTube/Vimeo link here_
 
+## Deployment Proof / Alibaba Cloud & Qwen Cloud Usage
+
+This project runs on **Alibaba Cloud** and uses **Qwen Cloud** as its AI engine.
+The links below point to the exact code that calls Alibaba Cloud services and APIs.
+
+**Qwen Cloud (DashScope, OpenAI-compatible) — AI engine**
+
+- Endpoint + models (`text-embedding-v4`, `qwen-plus`): [`backend/app/config.py#L25-L34`](backend/app/config.py#L25-L34)
+- API client initialization: [`backend/app/core/qwen_client.py#L60-L76`](backend/app/core/qwen_client.py#L60-L76)
+- Chat completion (classification, reasoning, answer generation): [`backend/app/core/qwen_client.py#L85-L104`](backend/app/core/qwen_client.py#L85-L104)
+- Embeddings (vectorize pack entries and queries): [`backend/app/core/qwen_client.py#L113-L134`](backend/app/core/qwen_client.py#L113-L134)
+
+**Alibaba Cloud OSS (Object Storage Service) — private pack handoff**
+
+- OSS SDK (`oss2`) bucket connection: [`backend/app/core/oss_storage.py#L71-L82`](backend/app/core/oss_storage.py#L71-L82)
+- Upload object to private bucket: [`backend/app/core/oss_storage.py#L85-L109`](backend/app/core/oss_storage.py#L85-L109)
+- Short-lived signed download URL: [`backend/app/core/oss_storage.py#L112-L118`](backend/app/core/oss_storage.py#L112-L118)
+- OSS configuration: [`backend/app/config.py#L159-L174`](backend/app/config.py#L159-L174)
+
+**Alibaba Cloud ECS — runtime**
+
+- Production Docker Compose (runs on the ECS instance): [`docker-compose.prod.yml`](docker-compose.prod.yml)
+- Step-by-step ECS deployment guide: [Deploy to Alibaba Cloud ECS](#deploy-to-alibaba-cloud-ecs)
+- Cloud SDK dependencies (`openai` = DashScope client, `oss2` = Alibaba OSS SDK): [`backend/requirements.txt#L6-L9`](backend/requirements.txt#L6-L9)
+
+Live deployment: `https://smp.sdesigner.tokyo` (Alibaba Cloud ECS, Singapore region).
+
 ## Concept
 
 Safe Memory Platform temporarily processes user data, converts it into portable Safe Memory Pack files, returns the pack to the owner, and deletes temporary working data.
