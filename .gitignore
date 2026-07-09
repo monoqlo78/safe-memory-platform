@@ -1,0 +1,26 @@
+﻿.env
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+build/
+
+# temporary data
+SafeMemory/temp/**
+!SafeMemory/temp/**/.gitkeep
+
+# local-only secrets/logs
+SafeMemory/**/*.log
+SafeMemory/**/*.local.json
+
+# real source data (never commit)
+demoknowlege/*.xlsx
+data/source/
+*.local.xlsx
+*.secret.xlsx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/settings.json

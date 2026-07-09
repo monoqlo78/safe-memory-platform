@@ -1,0 +1,13 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: safe-memory-backend
+    # Uses the production CMD from the Dockerfile (uvicorn without --reload).
+    ports:
+      - "8787:8787"
+    env_file:
+      - .env
+    volumes:
+      - ./SafeMemory:/app/SafeMemory
+    restart: unless-stopped

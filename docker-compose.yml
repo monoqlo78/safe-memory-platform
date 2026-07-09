@@ -1,0 +1,15 @@
+﻿services:
+  backend:
+    build:
+      context: ./backend
+    container_name: safe-memory-backend
+    # Local dev: hot-reload on code changes (production image CMD has no --reload).
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8787", "--reload"]
+    ports:
+      - "8787:8787"
+    env_file:
+      - .env
+    volumes:
+      - ./backend/app:/app/app
+      - ./SafeMemory:/app/SafeMemory
+    restart: unless-stopped
