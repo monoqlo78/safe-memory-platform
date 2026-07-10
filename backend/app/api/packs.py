@@ -461,6 +461,13 @@ def query_uploaded_memory(req: QueryByUploadRequest) -> QueryByUploadResponse:
 
     query_embedding = qwen_client.embed_text(req.query)
 
+    # NOTE on include_private: in queryMemoryPack, include_private only ever gates
+    # surfacing a per-hit original_text field. This endpoint deliberately returns
+    # aggregated used_packs + one synthesized answer and never exposes per-entry or
+    # original_text (spec: original_text/SECRET non-exposed), so include_private has
+    # no exposure effect here. The field is accepted for request-shape parity.
+    _ = req.include_private
+
     # Rank each imported pack independently, then merge by score.
     scored: List[tuple] = []  # (entry, score, pack_id)
     searched_packs: List[str] = []
