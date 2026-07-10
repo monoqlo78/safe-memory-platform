@@ -39,6 +39,7 @@ from app.models.pack_schema import (
     BuildPackRequest,
     ExportRequest,
     ImportByRefRequest,
+    QueryByUploadRequest,
     QueryRequest,
     VerifyRequest,
 )
@@ -303,6 +304,27 @@ def build_mcp():
         imported[] with the agent_id and pack_id of each uploaded pack; query
         ONLY those with query_memory_pack (do not use any other packs)."""
         return await _call(upload_links_api.get_upload_link_result, claim_id)
+
+    # ----------------------------------------------------- query_uploaded_memory
+    @mcp.tool()
+    async def query_uploaded_memory(
+        claim_id: str,
+        query: str,
+        top_k: int = 12,
+        include_private: bool = False,
+    ) -> dict:
+        """Cross-search every pack a user uploaded via one import link. Pass the
+        claim_id from create_upload_link(mode=import); you never need each pack's
+        imp- agent_id/pack_id. Returns answer, used_packs, classifications,
+        confidence, fallback. SECRET is never returned or sent to the LLM.
+        top_k defaults to 12."""
+        req = QueryByUploadRequest(
+            claim_id=claim_id,
+            query=query,
+            top_k=top_k,
+            include_private=include_private,
+        )
+        return await _call(packs_api.query_uploaded_memory, req)
 
     # ------------------------------------------------------------ build_memory_pack
     @mcp.tool()

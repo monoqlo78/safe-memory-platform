@@ -141,6 +141,7 @@ def test_json_friendly_ops_visible_in_openapi():
         "deleteJob",
         "createUploadLink",
         "getUploadLinkResult",
+        "queryUploadedMemory",
     }
     missing = expected - ids
     assert not missing, f"Missing GPT-usable operations from openapi.json: {missing}"

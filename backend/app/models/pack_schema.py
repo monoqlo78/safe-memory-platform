@@ -196,6 +196,36 @@ class QueryResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class QueryByUploadRequest(BaseModel):
+    """Cross-search every pack uploaded via one import-mode one-time link.
+
+    The caller only holds the ``claim_id`` returned by createUploadLink
+    (mode=import); it never needs the ephemeral ``imp-`` agent_id/pack_id of the
+    individual packs. The server resolves those from the claim.
+    """
+
+    claim_id: str
+    query: str
+    top_k: int = 12
+    include_private: bool = False
+
+
+class UploadedPackHit(BaseModel):
+    """One pack that contributed retained hits to a query-by-upload answer."""
+
+    agent_id: str
+    pack_id: str
+    hits: int = 0
+
+
+class QueryByUploadResponse(BaseModel):
+    answer: str
+    used_packs: List[UploadedPackHit] = Field(default_factory=list)
+    classifications: List[Classification] = Field(default_factory=list)
+    confidence: float = 0.0
+    fallback: bool = False
+
+
 class AppendRequest(BaseModel):
     agent_id: str
     pack_path: str

@@ -62,8 +62,11 @@ from app.models.pack_schema import (
     QueryHit,
     QueryRequest,
     QueryResponse,
+    QueryByUploadRequest,
+    QueryByUploadResponse,
     SafeMemoryPack,
     UploadBuildResponse,
+    UploadedPackHit,
     VerifyRequest,
     VerifyResponse,
     get_retrieval_text,
@@ -404,6 +407,131 @@ def query_pack(req: QueryRequest) -> QueryResponse:
         pack_id=pack_id,
         confidence=confidence,
         warnings=warnings,
+    )
+
+
+@router.post(
+    "/query-by-upload",
+    response_model=QueryByUploadResponse,
+    operation_id="queryUploadedMemory",
+    summary="Search all packs uploaded via one import link",
+    description=(
+        "Search every pack a user uploaded through one import link. Pass the "
+        "claim_id from createUploadLink(mode=import); you never need each pack's "
+        "imp- agent_id/pack_id. Returns one merged answer plus used_packs, "
+        "classifications, confidence, fallback. SECRET is never returned."
+    ),
+)
+def query_uploaded_memory(req: QueryByUploadRequest) -> QueryByUploadResponse:
+    """Cross-search all ephemeral packs bound to one import link's claim_id.
+
+    Robustness helper for GPT Actions: the assistant keeps only the single
+    ``claim_id`` from createUploadLink(mode=import) and never juggles the
+    per-pack ``imp-`` agent_id/pack_id values (a prior source of empty 404
+    queries). The server resolves the claim's private namespace, hybrid-searches
+    each imported pack, merges hits by score, and synthesizes one answer. Tenant
+    isolation: only this claim's packs are reachable.
+    """
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="query must not be empty.")
+
+    # Opportunistic hygiene: drop expired ephemeral packs before resolving, so an
+    # expired link answers nothing (mirrors query_pack). Best-effort.
+    jobs_store.sweep_expired_quietly()
+
+    claim = upload_links.load_claim(req.claim_id)
+    if claim is None or claim.is_expired():
+        raise HTTPException(status_code=404, detail="Unknown or expired claim_id.")
+
+    mode = (getattr(claim, "mode", "build") or "build")
+    if mode != "import":
+        raise HTTPException(
+            status_code=400,
+            detail="This link is not an import link; nothing to query.",
+        )
+
+    # Only this claim's private, unguessable namespace is reachable. Other links
+    # (and the shared vault) are never touched.
+    agent_id = (claim.import_agent_id or "").strip()
+    pack_ids: List[str] = []
+    for item in (claim.imported or []):
+        pid = str(item.get("pack_id") or "").strip()
+        if pid and pid not in pack_ids:
+            pack_ids.append(pid)
+
+    query_embedding = qwen_client.embed_text(req.query)
+
+    # Rank each imported pack independently, then merge by score.
+    scored: List[tuple] = []  # (entry, score, pack_id)
+    searched_packs: List[str] = []
+    for pack_id in pack_ids:
+        if not agent_id:
+            continue
+        found = pack_io.find_pack_by_id(agent_id, pack_id)
+        if found is None:
+            continue
+        try:
+            pack = pack_io.load_pack(found)
+        except Exception:  # noqa: BLE001 - skip unreadable packs, never fail the query.
+            continue
+        searched_packs.append(pack_id)
+        usable = [e for e in pack.entries if can_use_entry_for_query(e, None)]
+        if not usable:
+            continue
+        ranked = hybrid_search(req.query, query_embedding, usable, top_k=req.top_k)
+        for entry, score in ranked:
+            scored.append((entry, score, pack_id))
+
+    # Global top_k across all packs.
+    scored.sort(key=lambda t: t[1], reverse=True)
+    top = scored[: req.top_k]
+
+    llm_entries: List[Dict[str, str]] = []
+    classifications: List[Classification] = []
+    retained_scores: List[float] = []
+    pack_hit_counts: Dict[str, int] = {}
+    secret_excluded = 0
+    for entry, score, pack_id in top:
+        # Never expose or send SECRET content (parity with queryMemoryPack).
+        if entry.classification == Classification.SECRET:
+            secret_excluded += 1
+            continue
+        classifications.append(entry.classification)
+        retained_scores.append(score)
+        pack_hit_counts[pack_id] = pack_hit_counts.get(pack_id, 0) + 1
+        if can_send_entry_to_llm(entry):
+            llm_entries.append(
+                {"id": entry.id, "text": get_retrieval_text(entry)}
+            )
+
+    result = qwen_client.answer_with_context(req.query, llm_entries)
+    confidence = round(max(retained_scores, default=0.0), 4)
+
+    # Per-pack structured log (never logs the API key, query body, or original
+    # text). One line per searched pack for auditability.
+    for pack_id in searched_packs:
+        logger.info(
+            "queryUploadedMemory claim_pack agent_id=%s pack_id=%s top_k=%s hits=%d",
+            agent_id,
+            pack_id,
+            req.top_k,
+            pack_hit_counts.get(pack_id, 0),
+        )
+
+    used_packs = [
+        UploadedPackHit(
+            agent_id=agent_id, pack_id=pack_id, hits=pack_hit_counts[pack_id]
+        )
+        for pack_id in searched_packs
+        if pack_hit_counts.get(pack_id, 0) > 0
+    ]
+
+    return QueryByUploadResponse(
+        answer=str(result["answer"]),
+        used_packs=used_packs,
+        classifications=classifications,
+        confidence=confidence,
+        fallback=bool(result["fallback_used"]),
     )
 
 
