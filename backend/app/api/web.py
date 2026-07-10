@@ -464,6 +464,153 @@ _UPLOAD_PAGE = (
     _HEAD + _UPLOAD_BODY + "\n<script>" + _COLLECT_JS + _UPLOAD_RUN_JS + "</script>\n</body>\n</html>"
 )
 
+# --- Import page: register pre-built .smp.json packs into the catalog -------
+# Unlike /upload (which merges raw source files into ONE new pack), this page
+# imports already-built packs. Each selected .smp.json becomes a SEPARATE pack,
+# so the files are uploaded and imported one at a time (never zipped/merged).
+_IMPORT_BODY = """<body>
+<div class="wrap">
+  <h1>Safe Memory &mdash; Import Packs</h1>
+  <p class="sub">Upload one or more <b>pre-built</b> <code>.smp.json</code> packs to register
+  them in an agent's catalog so they become queryable by <code>pack_id</code>. Each file is
+  imported as a <b>separate</b> pack (they are <b>not</b> merged). Use this for packs that were
+  built elsewhere and cannot be attached through GPT. Bytes go straight to the server.</p>
+
+  <div class="card">
+    <label>API key (X-Safe-Memory-Key)</label>
+    <input id="apiKey" type="password" placeholder="your Safe Memory API key" />
+    <label>agent_id (packs are imported into this agent's vault)</label>
+    <input id="agentId" value="tax-agent" />
+    <label>.smp.json pack files</label>
+    <div id="drop">Drop .smp.json files here, or use the button below<br><small id="fname"></small></div>
+    <div class="picks">
+      <button id="pickFiles" type="button">Choose .smp.json files&hellip;</button>
+    </div>
+    <div id="flist"></div>
+    <input id="file" type="file" multiple accept=".smp.json,.json" style="display:none" />
+    <button id="go">Import Packs</button>
+    <div id="status"></div>
+    <div id="result" class="result"></div>
+  </div>
+</div>"""
+
+_IMPORT_RUN_JS = """
+const $ = (id) => document.getElementById(id);
+const drop = $("drop"), fileInput = $("file");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let picked = [];  // array of File
+
+function setStatus(msg, cls) {
+  const el = $("status"); el.textContent = msg; el.className = cls || "";
+}
+function renderList() {
+  $("fname").textContent = picked.length ? (picked.length + " file(s) selected") : "";
+  $("flist").innerHTML = picked.map((f) => f.name).join("<br>");
+}
+function addFiles(files) {
+  for (const f of files) {
+    const lower = (f.name || "").toLowerCase();
+    if (lower.endsWith(".json")) picked.push(f);
+  }
+  renderList();
+}
+$("pickFiles").onclick = () => fileInput.click();
+fileInput.onchange = (e) => addFiles(e.target.files);
+drop.onclick = () => fileInput.click();
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.add("hot");
+}));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.remove("hot");
+}));
+drop.addEventListener("drop", (e) => { if (e.dataTransfer) addFiles(e.dataTransfer.files); });
+
+async function importOne(file, authHeaders, agentId) {
+  let r = await fetch("/api/uploads/init", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: JSON.stringify({ filename: file.name, content_type: "application/json", size: file.size })
+  });
+  if (!r.ok) throw new Error("init failed: " + r.status + " " + await r.text());
+  const init = await r.json();
+
+  r = await fetch(init.upload_url + "?token=" + encodeURIComponent(init.upload_token), {
+    method: "PUT",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: file
+  });
+  if (!r.ok) throw new Error("upload failed: " + r.status + " " + await r.text());
+
+  r = await fetch("/api/packs/import-from-upload-ref", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: JSON.stringify({ upload_id: init.upload_id, agent_id: agentId })
+  });
+  if (!r.ok) throw new Error("import failed: " + r.status + " " + await r.text());
+  return await r.json();
+}
+
+async function run() {
+  const key = $("apiKey").value.trim();
+  const agentId = $("agentId").value.trim();
+  if (!picked.length) { setStatus("Please choose one or more .smp.json files.", "err"); return; }
+  if (!agentId) { setStatus("Please enter an agent_id.", "err"); return; }
+  const authHeaders = key ? { "X-Safe-Memory-Key": key } : {};
+  $("go").disabled = true; $("result").innerHTML = "";
+  const results = [];
+  try {
+    for (let i = 0; i < picked.length; i++) {
+      const f = picked[i];
+      setStatus("Importing " + (i + 1) + "/" + picked.length + ": " + f.name + " ...");
+      try {
+        const res = await importOne(f, authHeaders, agentId);
+        results.push({ name: f.name, ok: true, res });
+      } catch (e) {
+        results.push({ name: f.name, ok: false, error: String(e.message || e) });
+      }
+    }
+    const okCount = results.filter((x) => x.ok).length;
+    setStatus("Done: " + okCount + "/" + results.length + " imported.", okCount === results.length ? "ok" : "err");
+    renderResults(results, agentId);
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+function renderResults(results, agentId) {
+  const el = $("result");
+  let html = "";
+  for (const r of results) {
+    if (r.ok) {
+      const j = r.res;
+      const counts = j.classification_summary || {};
+      html += "<div class='share'>"
+           + "<div class='ok'><b>&#10003; " + r.name + "</b></div>"
+           + "<div><b>pack_id:</b> <code>" + j.pack_id + "</code></div>"
+           + "<div><b>entries:</b> " + j.entry_count + "</div>"
+           + "<div><b>verified:</b> " + (j.verified ? "yes" : "no") + "</div>"
+           + "<div><b>classifications:</b> " + JSON.stringify(counts) + "</div>";
+      if ((j.warnings || []).length) {
+        html += "<div class='err'>warnings: " + j.warnings.join("; ") + "</div>";
+      }
+      html += "<div style='font-size:.75rem;color:var(--muted);margin-top:6px'>"
+           + "Query it via <code>queryMemoryPack</code> with agent_id=<code>" + agentId
+           + "</code> and pack_id=<code>" + j.pack_id + "</code>.</div>"
+           + "</div>";
+    } else {
+      html += "<div class='share'><div class='err'><b>&#10007; " + r.name + "</b></div>"
+           + "<div class='err'>" + r.error + "</div></div>";
+    }
+  }
+  el.innerHTML = html;
+}
+$("go").onclick = run;
+"""
+
+_IMPORT_PAGE = (
+    _HEAD + _IMPORT_BODY + "\n<script>" + _IMPORT_RUN_JS + "</script>\n</body>\n</html>"
+)
+
 _UPLOAD_TOKEN_PAGE = (
     _HEAD + _TOKEN_BODY + "\n<script>" + _COLLECT_JS + _TOKEN_RUN_JS + "</script>\n</body>\n</html>"
 )
@@ -488,6 +635,12 @@ _TOKEN_ERROR_PAGE = (
 def upload_page() -> HTMLResponse:
     """Serve the self-contained browser upload page (no auth; key in the form)."""
     return HTMLResponse(content=_UPLOAD_PAGE)
+
+
+@router.get("/import", response_class=HTMLResponse, include_in_schema=False)
+def import_page() -> HTMLResponse:
+    """Serve the browser page for importing pre-built .smp.json packs (key in the form)."""
+    return HTMLResponse(content=_IMPORT_PAGE)
 
 
 @router.get("/u/{token}", response_class=HTMLResponse, include_in_schema=False)

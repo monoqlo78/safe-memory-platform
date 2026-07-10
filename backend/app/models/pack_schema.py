@@ -246,6 +246,20 @@ class ImportByRefRequest(BaseModel):
     pack_id: Optional[str] = None
 
 
+class ImportFromUploadRefRequest(BaseModel):
+    """Import a pre-built ``.smp.json`` pack from a staged upload.
+
+    Mirrors :class:`ImportByRefRequest` but takes an ``upload_id`` (staged via
+    ``/api/uploads``) instead of a URL, so a browser can import a local pack file
+    without first hosting it at a public URL.
+    """
+
+    upload_id: str
+    agent_id: str
+    # When omitted, the pack's manifest pack_id is used (or one is generated).
+    pack_id: Optional[str] = None
+
+
 class ImportByRefResponse(BaseModel):
     pack_id: str
     entry_count: int

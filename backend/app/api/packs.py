@@ -54,6 +54,7 @@ from app.models.pack_schema import (
     ExportResponse,
     ImportByRefRequest,
     ImportByRefResponse,
+    ImportFromUploadRefRequest,
     Manifest,
     Metadata,
     Provenance,
@@ -600,30 +601,19 @@ def verify_pack(req: VerifyRequest) -> VerifyResponse:
     )
 
 
-@router.post(
-    "/import-by-ref",
-    response_model=ImportByRefResponse,
-    operation_id="importPackByRef",
-    summary="Import a Safe Memory Pack from a URL",
-    description=(
-        "Import a Safe Memory Pack from a public HTTPS URL (a .smp.json file, "
-        "e.g. a server or Drive/OneDrive share link) into an agent's vault, so "
-        "packs are shared by link. HTTPS-only with SSRF and size guards; the "
-        "ledger hash chain is verified (verified flag). Provide url, agent_id, "
-        "and optional pack_id."
-    ),
-)
-def import_pack_by_ref(req: ImportByRefRequest) -> ImportByRefResponse:
-    """Fetch, verify, and import a pack referenced by a remote HTTPS URL."""
-    try:
-        raw = pack_import.fetch_pack_bytes(req.url, _max_import_bytes())
-    except ImportRefError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+def _import_pack_from_bytes(
+    raw: bytes, agent_id: str, pack_id: Optional[str], json_error_detail: str
+) -> ImportByRefResponse:
+    """Validate, verify, and import a ``.smp.json`` pack from raw bytes.
 
+    Shared by :func:`import_pack_by_ref` (URL fetch) and
+    :func:`import_pack_from_upload_ref` (staged upload). Re-homes the pack under
+    ``agent_id`` so it becomes queryable by ``pack_id`` in that agent's vault.
+    """
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        raise HTTPException(status_code=400, detail="URL did not return valid JSON.")
+        raise HTTPException(status_code=400, detail=json_error_detail)
 
     try:
         pack = SafeMemoryPack.model_validate(data)
@@ -643,18 +633,18 @@ def import_pack_by_ref(req: ImportByRefRequest) -> ImportByRefResponse:
         warnings.append("Ledger verification failed; imported with verified=false.")
 
     final_pack_id = (
-        (req.pack_id or "").strip()
+        (pack_id or "").strip()
         or (pack.manifest.pack_id or "").strip()
         or f"imported-{uuid.uuid4().hex[:8]}"
     )
 
     # Re-home the pack under the importing agent.
-    pack.manifest.agent_id = req.agent_id
+    pack.manifest.agent_id = agent_id
     pack.manifest.pack_id = final_pack_id
 
     try:
         target = pack_io.pack_target_path(
-            req.agent_id, final_pack_id, pack.manifest.default_classification
+            agent_id, final_pack_id, pack.manifest.default_classification
         )
         pack_io.save_pack(pack, target)
     except UnsafePathError:
@@ -668,6 +658,68 @@ def import_pack_by_ref(req: ImportByRefRequest) -> ImportByRefResponse:
         verified=valid,
         warnings=warnings,
     )
+
+
+@router.post(
+    "/import-by-ref",
+    response_model=ImportByRefResponse,
+    operation_id="importPackByRef",
+    summary="Import a Safe Memory Pack from a URL",
+    description=(
+        "Import a Safe Memory Pack from a public HTTPS URL (a .smp.json file, "
+        "e.g. a server or Drive/OneDrive share link) into an agent's vault, so "
+        "packs are shared by link. HTTPS-only with SSRF and size guards; the "
+        "ledger hash chain is verified (verified flag). Provide url, agent_id, "
+        "and optional pack_id."
+    ),
+)
+def import_pack_by_ref(req: ImportByRefRequest) -> ImportByRefResponse:
+    """Fetch, verify, and import a pack referenced by a remote HTTPS URL."""
+    try:
+        raw = pack_import.fetch_pack_bytes(req.url, _max_import_bytes())
+    except ImportRefError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    return _import_pack_from_bytes(
+        raw, req.agent_id, req.pack_id, "URL did not return valid JSON."
+    )
+
+
+@router.post(
+    "/import-from-upload-ref",
+    response_model=ImportByRefResponse,
+    operation_id="importMemoryPackFromUploadRef",
+    include_in_schema=False,
+)
+def import_pack_from_upload_ref(
+    req: ImportFromUploadRefRequest,
+) -> ImportByRefResponse:
+    """Import a pre-built .smp.json pack from a staged upload (browser path).
+
+    Binary files cannot travel through the LLM/GPT Actions, so the browser first
+    stages the file via /api/uploads, then calls this endpoint with the
+    upload_id. The staged bytes are validated, verified, and imported into
+    agent_id's vault (queryable by pack_id). Hidden from OpenAPI; guarded by the
+    master API key (ApiKeyAuthMiddleware).
+    """
+    store = storage.get_storage()
+    record = storage.load_upload_record(req.upload_id)
+    if record is None or not store.exists(req.upload_id):
+        raise HTTPException(status_code=404, detail="Staged upload not found.")
+
+    raw = store.open(req.upload_id)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Staged upload not found.")
+    try:
+        result = _import_pack_from_bytes(
+            raw, req.agent_id, req.pack_id, "Uploaded file is not valid JSON."
+        )
+    finally:
+        # Imported (or rejected) staged bytes are single-use; clean up.
+        try:
+            store.delete(req.upload_id)
+        except Exception:  # noqa: BLE001 - cleanup is best-effort.
+            pass
+    return result
 
 
 def _looks_japanese(text: str) -> bool:
