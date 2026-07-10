@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import re
 import secrets
 import uuid
@@ -71,6 +72,8 @@ from app.models.upload_schema import UploadRecord, UploadStatus
 from app.core.pack_import import ImportRefError
 
 router = APIRouter(prefix="/api/packs", tags=["packs"])
+
+logger = logging.getLogger("safe_memory.packs")
 
 # Maximum accepted upload size for /build-from-upload (bytes).
 # Legacy default kept for reference; the effective limit is configurable via
@@ -315,6 +318,13 @@ def query_pack(req: QueryRequest) -> QueryResponse:
     warnings: List[str] = []
 
     if not usable:
+        logger.info(
+            "queryMemoryPack agent_id=%s pack_id=%s top_k=%s hits=0 "
+            "secret_excluded=0 usable_entries=0 confidence=0.0 fallback=true",
+            req.agent_id,
+            pack_id,
+            req.top_k,
+        )
         return QueryResponse(
             answer="No memory entries are permitted for this query under the "
             "current policy and allowed classifications.",
@@ -366,6 +376,19 @@ def query_pack(req: QueryRequest) -> QueryResponse:
     result = qwen_client.answer_with_context(req.query, llm_entries)
 
     confidence = round(max((h.score for h in hits), default=0.0), 4)
+
+    logger.info(
+        "queryMemoryPack agent_id=%s pack_id=%s top_k=%s hits=%d "
+        "secret_excluded=%d usable_entries=%d confidence=%s fallback=%s",
+        req.agent_id,
+        pack_id,
+        req.top_k,
+        len(hits),
+        secret_excluded,
+        len(usable),
+        confidence,
+        bool(result["fallback_used"]),
+    )
 
     return QueryResponse(
         answer=str(result["answer"]),

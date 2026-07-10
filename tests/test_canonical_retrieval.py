@@ -65,3 +65,28 @@ def test_query_response_returns_canonical_text(safe_root):
     # The top hit text is the English canonical text, not the Japanese source.
     assert "Tax categories" in resp.hits[0].text
     assert resp.used_memory_ids
+
+
+def test_query_emits_structured_log(safe_root, caplog):
+    """Query logs agent_id/pack_id/hits for demo traceability, no secret values."""
+    _, saved_path = _build(safe_root)
+    with caplog.at_level("INFO", logger="safe_memory.packs"):
+        query_pack(
+            QueryRequest(
+                agent_id="tax-agent",
+                pack_path=pack_io.relpath_from_root(saved_path),
+                query="How are tax categories represented in a journal CSV?",
+                top_k=2,
+            )
+        )
+
+    lines = [r.getMessage() for r in caplog.records if "queryMemoryPack" in r.getMessage()]
+    assert lines, "expected a queryMemoryPack log line"
+    line = lines[-1]
+    assert "agent_id=tax-agent" in line
+    assert "pack_id=canonical-test" in line
+    assert "top_k=2" in line
+    assert "hits=" in line
+    # The API key is never logged.
+    assert "X-Safe-Memory-Key" not in line
+
