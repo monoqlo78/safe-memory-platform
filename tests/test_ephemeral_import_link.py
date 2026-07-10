@@ -260,6 +260,56 @@ def test_expired_import_is_cleaned_up(client, auth):
     assert q.status_code == 404
 
 
+def _expire_pack_job(agent_id, pack_id):
+    """Force the temp job backing an ephemeral pack past its TTL. Returns count."""
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    touched = 0
+    for job in jobs_store.list_jobs():
+        if job.agent_id == agent_id and job.pack_id == pack_id:
+            job.expires_at = past
+            jobs_store.save_job(job)
+            touched += 1
+    return touched
+
+
+def test_opportunistic_cleanup_on_new_link(client, auth):
+    """Creating a new link sweeps an already-expired ephemeral pack (no scheduler)."""
+    data = _build_pack_bytes(client, auth, pack_id="ephem-opp1")
+    link, _ = _import_via_link(client, auth, data)
+    agent_id = client.get(
+        f"/api/upload-links/{link['claim_id']}", headers=auth
+    ).json()["imported"][0]["agent_id"]
+    assert pack_io.find_pack_by_id(agent_id, "ephem-opp1") is not None
+    assert _expire_pack_job(agent_id, "ephem-opp1") == 1
+
+    # A brand-new session (createUploadLink) triggers opportunistic cleanup.
+    resp = client.post(
+        "/api/upload-links", json={"mode": "import", "title": "next"}, headers=auth
+    )
+    assert resp.status_code == 200
+    assert pack_io.find_pack_by_id(agent_id, "ephem-opp1") is None
+
+
+def test_opportunistic_cleanup_on_query_returns_404(client, auth):
+    """Querying an expired ephemeral pack sweeps it first, so it 404s (never answered)."""
+    data = _build_pack_bytes(client, auth, pack_id="ephem-opp2")
+    link, _ = _import_via_link(client, auth, data)
+    agent_id = client.get(
+        f"/api/upload-links/{link['claim_id']}", headers=auth
+    ).json()["imported"][0]["agent_id"]
+    assert _expire_pack_job(agent_id, "ephem-opp2") == 1
+
+    # No explicit cleanupJobs call: the query path itself sweeps expired packs,
+    # so the expired pack is gone and the query 404s instead of answering.
+    q = client.post(
+        "/api/packs/query",
+        json={"agent_id": agent_id, "pack_id": "ephem-opp2", "query": "revenue?"},
+        headers=auth,
+    )
+    assert q.status_code == 404
+    assert pack_io.find_pack_by_id(agent_id, "ephem-opp2") is None
+
+
 # ---------------------------------------------------------------------------
 # A build-mode token must not be repurposed to import packs
 # ---------------------------------------------------------------------------

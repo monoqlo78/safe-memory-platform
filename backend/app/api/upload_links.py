@@ -108,6 +108,10 @@ def create_upload_link(
     req: CreateUploadLinkRequest, request: Request
 ) -> CreateUploadLinkResponse:
     """Create a scoped one-time upload link and return its public URL."""
+    # Opportunistic hygiene: each new session sweeps expired ephemeral packs
+    # left by earlier links, so uploaded packs really are auto-deleted in
+    # practice (no scheduler). Best-effort; never blocks link creation.
+    jobs_store.sweep_expired_quietly()
     token = upload_links.new_token()
     mode = "import" if (req.mode or "build").strip().lower() == "import" else "build"
     # Import-mode links register finished packs into a private, unguessable,

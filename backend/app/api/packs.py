@@ -303,6 +303,11 @@ def query_pack(req: QueryRequest) -> QueryResponse:
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty.")
 
+    # Opportunistic hygiene: drop any expired one-time-import packs before we
+    # resolve this one, so an expired ephemeral pack is gone (-> 404) and never
+    # answered from. Best-effort; never blocks the query.
+    jobs_store.sweep_expired_quietly()
+
     try:
         path = _resolve_pack_path(req.agent_id, req.pack_path, req.pack_id)
         pack = pack_io.load_pack(path)
@@ -729,6 +734,9 @@ def import_pack_from_upload_ref(
       persistence). Hidden from OpenAPI; staged bytes are single-use.
     """
     claim = auth.claim if auth.mode == "token" else None
+    # Opportunistic hygiene on every import: remove expired ephemeral packs from
+    # earlier links so the server does not accumulate stale one-time uploads.
+    jobs_store.sweep_expired_quietly()
     if claim is not None and (getattr(claim, "mode", "build") or "build") != "import":
         # A build-mode one-time token must not be repurposed to import packs.
         raise HTTPException(

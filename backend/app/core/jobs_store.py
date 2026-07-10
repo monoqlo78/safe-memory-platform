@@ -222,3 +222,22 @@ def cleanup_expired_temp_jobs() -> dict:
         "working_dirs_deleted": working_dirs_deleted,
         "job_ids": cleaned_ids,
     }
+
+
+def sweep_expired_quietly() -> None:
+    """Opportunistically delete expired temp/ephemeral packs; never raise.
+
+    Called at the start of normal request paths (create link, query, import) so
+    that expired one-time-import packs are actually removed as the platform is
+    used, without a background scheduler. Failures are logged, never propagated,
+    and never include the API key or request body.
+    """
+    try:
+        summary = cleanup_expired_temp_jobs()
+        if summary.get("packs_deleted"):
+            logger.info(
+                "opportunistic cleanup removed %s expired temp pack(s)",
+                summary["packs_deleted"],
+            )
+    except Exception:  # pragma: no cover - best-effort background hygiene
+        logger.warning("opportunistic cleanup failed", exc_info=False)
