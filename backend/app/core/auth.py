@@ -35,6 +35,7 @@ _SELF_AUTHED_PATHS = frozenset(
     {
         "/api/uploads/init",
         "/api/packs/build-from-upload-ref",
+        "/api/packs/import-from-upload-ref",
         "/api/upload-links/status",
     }
 )

@@ -40,6 +40,16 @@ def new_claim_id() -> str:
     return secrets.token_urlsafe(16)
 
 
+def new_import_agent_id() -> str:
+    """Unguessable, per-claim agent namespace for ephemeral imports.
+
+    Imported packs live under this agent id only. It is returned to the
+    authenticated LLM (via getUploadLinkResult), never to the anonymous page,
+    so different links cannot reach each other's packs.
+    """
+    return "imp-" + secrets.token_urlsafe(12)
+
+
 def compute_expires_at(expires_in_seconds: int) -> str:
     ttl = int(expires_in_seconds or DEFAULT_EXPIRES_IN_SECONDS)
     ttl = max(60, min(ttl, MAX_EXPIRES_IN_SECONDS))
@@ -126,5 +136,18 @@ def consume_use(claim: UploadLinkClaim, job_id: str) -> UploadLinkClaim:
     """Bind the resulting job to the claim and consume one use (persisted)."""
     claim.job_id = job_id
     claim.uses_consumed = int(claim.uses_consumed) + 1
+    save_claim(claim)
+    return claim
+
+
+def record_import(claim: UploadLinkClaim, imported: dict) -> UploadLinkClaim:
+    """Append one imported-pack record to an import-mode claim (persisted).
+
+    Import-mode links accept several packs in one session, so uses are not
+    consumed per file; the link stays usable until it expires. Only the safe,
+    non-secret summary (agent_id, pack_id, entry_count, classifications,
+    verified) is stored.
+    """
+    claim.imported = list(claim.imported) + [imported]
     save_claim(claim)
     return claim

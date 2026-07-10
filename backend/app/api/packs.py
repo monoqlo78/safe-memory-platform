@@ -715,15 +715,32 @@ def import_pack_by_ref(req: ImportByRefRequest) -> ImportByRefResponse:
 )
 def import_pack_from_upload_ref(
     req: ImportFromUploadRefRequest,
+    auth: UploadAuthContext = Depends(require_upload_or_token),
 ) -> ImportByRefResponse:
-    """Import a pre-built .smp.json pack from a staged upload (browser path).
+    """Import a pre-built .smp.json pack from a staged upload.
 
-    Binary files cannot travel through the LLM/GPT Actions, so the browser first
-    stages the file via /api/uploads, then calls this endpoint with the
-    upload_id. The staged bytes are validated, verified, and imported into
-    agent_id's vault (queryable by pack_id). Hidden from OpenAPI; guarded by the
-    master API key (ApiKeyAuthMiddleware).
+    Binary packs cannot travel through the LLM/GPT Actions, so the browser first
+    stages the file via /api/uploads, then calls this with the upload_id. Two
+    callers, resolved by auth:
+    * The /import page (master key) imports into agent_id's persistent vault.
+    * The keyless /u/{token} import page (X-Upload-Token) imports into the
+      link's private, unguessable, TTL-expired namespace, so the user can query
+      only their own packs for the life of the link (tenant isolation, no
+      persistence). Hidden from OpenAPI; staged bytes are single-use.
     """
+    claim = auth.claim if auth.mode == "token" else None
+    if claim is not None and (getattr(claim, "mode", "build") or "build") != "import":
+        # A build-mode one-time token must not be repurposed to import packs.
+        raise HTTPException(
+            status_code=403, detail="This link does not allow importing packs."
+        )
+
+    # In token mode the pack is re-homed under the claim's ephemeral namespace,
+    # never the caller-supplied agent_id, so links cannot reach each other.
+    target_agent_id = (
+        (claim.import_agent_id if claim is not None else None) or req.agent_id
+    )
+
     store = storage.get_storage()
     record = storage.load_upload_record(req.upload_id)
     if record is None or not store.exists(req.upload_id):
@@ -734,7 +751,7 @@ def import_pack_from_upload_ref(
         raise HTTPException(status_code=404, detail="Staged upload not found.")
     try:
         result = _import_pack_from_bytes(
-            raw, req.agent_id, req.pack_id, "Uploaded file is not valid JSON."
+            raw, target_agent_id, req.pack_id, "Uploaded file is not valid JSON."
         )
     finally:
         # Imported (or rejected) staged bytes are single-use; clean up.
@@ -742,7 +759,53 @@ def import_pack_from_upload_ref(
             store.delete(req.upload_id)
         except Exception:  # noqa: BLE001 - cleanup is best-effort.
             pass
+
+    # Ephemeral (token) imports get a temporary-retention job so the existing
+    # cleanup sweep removes the pack file once the link expires. Never vaulted.
+    if claim is not None:
+        _register_ephemeral_import(claim, target_agent_id, result)
+
     return result
+
+
+def _register_ephemeral_import(
+    claim, agent_id: str, result: ImportByRefResponse
+) -> None:
+    """Bind an imported pack to a temp job and record it on the import claim.
+
+    The temp JobRecord points cleanup_expired_temp_jobs at the imported pack
+    file, so it is deleted after the link's TTL (never persisted to the vault).
+    Only safe summary fields (no secret content) are stored on the claim.
+    """
+    found = pack_io.find_pack_by_id(agent_id, result.pack_id)
+    pack_rel = pack_io.relpath_from_root(found) if found is not None else None
+    job = JobRecord(
+        job_id=uuid.uuid4().hex,
+        agent_id=agent_id,
+        pack_id=result.pack_id,
+        status=JobStatus.COMPLETED,
+        retention_mode=RetentionMode.SESSION,
+        expires_at=(
+            claim.expires_at
+            or jobs_store.compute_expires_at(RetentionMode.SESSION)
+        ),
+        pack_persisted=True,
+        entry_count=result.entry_count,
+        classification_counts=dict(result.classification_summary),
+        pack_path=pack_rel,
+    )
+    jobs_store.save_job(job)
+    upload_links.record_import(
+        claim,
+        {
+            "agent_id": agent_id,
+            "pack_id": result.pack_id,
+            "entry_count": result.entry_count,
+            "classifications": dict(result.classification_summary),
+            "verified": bool(result.verified),
+            "job_id": job.job_id,
+        },
+    )
 
 
 def _looks_japanese(text: str) -> bool:

@@ -615,6 +615,157 @@ _UPLOAD_TOKEN_PAGE = (
     _HEAD + _TOKEN_BODY + "\n<script>" + _COLLECT_JS + _TOKEN_RUN_JS + "</script>\n</body>\n</html>"
 )
 
+# --- Keyless one-time IMPORT page (mode="import" links) ---------------------
+# Like /import but keyless: the user drops finished .smp.json packs and they are
+# registered into the link's PRIVATE, temporary namespace (server-derived), so
+# the user can query only their own packs for the life of the link. The
+# ephemeral agent_id is never shown here; the assistant learns it via
+# getUploadLinkResult.
+_TOKEN_IMPORT_BODY = """<body>
+<div class="wrap">
+  <h1>Safe Memory &mdash; Import Your Packs</h1>
+  <p class="sub">Upload one or more <b>pre-built</b> <code>.smp.json</code> packs. They are
+  imported into a <b>private, temporary</b> space just for this link and are automatically
+  deleted when the link expires. <b>No login or API key needed.</b> Each file becomes a
+  <b>separate</b> pack. Bytes go straight to the server, never through GPT/Claude.</p>
+
+  <div class="card">
+    <label>.smp.json pack files</label>
+    <div id="drop">Drop .smp.json files here, or use the button below<br><small id="fname"></small></div>
+    <div class="picks">
+      <button id="pickFiles" type="button">Choose .smp.json files&hellip;</button>
+    </div>
+    <div id="flist"></div>
+    <input id="file" type="file" multiple accept=".smp.json,.json" style="display:none" />
+    <button id="go">Import Packs</button>
+    <div id="status"></div>
+    <div id="result" class="result"></div>
+  </div>
+</div>"""
+
+_TOKEN_IMPORT_RUN_JS = """
+// The one-time token is the last path segment (/u/{token}); it authorizes
+// staging + import into this link's private namespace. No API key is present.
+const TOKEN = decodeURIComponent((location.pathname.split("/").filter(Boolean).pop()) || "");
+const $ = (id) => document.getElementById(id);
+const drop = $("drop"), fileInput = $("file");
+let picked = [];  // array of File
+
+function setStatus(msg, cls) {
+  const el = $("status"); el.textContent = msg; el.className = cls || "";
+}
+function renderList() {
+  $("fname").textContent = picked.length ? (picked.length + " file(s) selected") : "";
+  $("flist").innerHTML = picked.map((f) => f.name).join("<br>");
+}
+function addFiles(files) {
+  for (const f of files) {
+    const lower = (f.name || "").toLowerCase();
+    if (lower.endsWith(".json")) picked.push(f);
+  }
+  renderList();
+}
+$("pickFiles").onclick = () => fileInput.click();
+fileInput.onchange = (e) => addFiles(e.target.files);
+drop.onclick = () => fileInput.click();
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.add("hot");
+}));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.remove("hot");
+}));
+drop.addEventListener("drop", (e) => { if (e.dataTransfer) addFiles(e.dataTransfer.files); });
+
+async function importOne(file) {
+  const authHeaders = { "X-Upload-Token": TOKEN };
+  let r = await fetch("/api/uploads/init", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: JSON.stringify({ filename: file.name, content_type: "application/json", size: file.size })
+  });
+  if (!r.ok) throw new Error("init failed: " + r.status + " " + await r.text());
+  const init = await r.json();
+
+  r = await fetch(init.upload_url + "?token=" + encodeURIComponent(init.upload_token), {
+    method: "PUT",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: file
+  });
+  if (!r.ok) throw new Error("upload failed: " + r.status + " " + await r.text());
+
+  // agent_id is a placeholder; the server overrides it with this link's
+  // private namespace in token mode.
+  r = await fetch("/api/packs/import-from-upload-ref", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: JSON.stringify({ upload_id: init.upload_id, agent_id: "import" })
+  });
+  if (!r.ok) throw new Error("import failed: " + r.status + " " + await r.text());
+  return await r.json();
+}
+
+async function run() {
+  if (!picked.length) { setStatus("Please choose one or more .smp.json files.", "err"); return; }
+  $("go").disabled = true; $("result").innerHTML = "";
+  const results = [];
+  try {
+    for (let i = 0; i < picked.length; i++) {
+      const f = picked[i];
+      setStatus("Importing " + (i + 1) + "/" + picked.length + ": " + f.name + " ...");
+      try {
+        const res = await importOne(f);
+        results.push({ name: f.name, ok: true, res });
+      } catch (e) {
+        results.push({ name: f.name, ok: false, error: String(e.message || e) });
+      }
+    }
+    const okCount = results.filter((x) => x.ok).length;
+    setStatus("Done: " + okCount + "/" + results.length + " imported.", okCount === results.length ? "ok" : "err");
+    renderResults(results);
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+function renderResults(results) {
+  const el = $("result");
+  let html = "";
+  const okCount = results.filter((x) => x.ok).length;
+  if (okCount) {
+    html += "<div class='share'><div class='ok'><b>&#10003; " + okCount
+         + " pack(s) imported into your private space.</b></div>"
+         + "<div style='font-size:.8rem;color:var(--muted);margin-top:6px'>"
+         + "Return to your assistant &mdash; it can now query these packs. They are "
+         + "automatically deleted when this link expires.</div></div>";
+  }
+  for (const r of results) {
+    if (r.ok) {
+      const j = r.res;
+      const counts = j.classification_summary || {};
+      html += "<div class='share'>"
+           + "<div class='ok'><b>&#10003; " + r.name + "</b></div>"
+           + "<div><b>pack_id:</b> <code>" + j.pack_id + "</code></div>"
+           + "<div><b>entries:</b> " + j.entry_count + "</div>"
+           + "<div><b>verified:</b> " + (j.verified ? "yes" : "no") + "</div>"
+           + "<div><b>classifications:</b> " + JSON.stringify(counts) + "</div>";
+      if ((j.warnings || []).length) {
+        html += "<div class='err'>warnings: " + j.warnings.join("; ") + "</div>";
+      }
+      html += "</div>";
+    } else {
+      html += "<div class='share'><div class='err'><b>&#10007; " + r.name + "</b></div>"
+           + "<div class='err'>" + r.error + "</div></div>";
+    }
+  }
+  el.innerHTML = html;
+}
+$("go").onclick = run;
+"""
+
+_UPLOAD_TOKEN_IMPORT_PAGE = (
+    _HEAD + _TOKEN_IMPORT_BODY + "\n<script>" + _TOKEN_IMPORT_RUN_JS + "</script>\n</body>\n</html>"
+)
+
 _TOKEN_ERROR_PAGE = (
     _HEAD
     + """<body>
@@ -649,4 +800,8 @@ def one_time_upload_page(token: str) -> HTMLResponse:
     claim = upload_links.find_claim_by_token((token or "").strip())
     if claim is None:
         return HTMLResponse(content=_TOKEN_ERROR_PAGE, status_code=404)
+    # Import-mode links serve the "upload finished .smp.json packs" UI; the
+    # default (build) mode serves the "drop raw files, build a pack" UI.
+    if (getattr(claim, "mode", "build") or "build") == "import":
+        return HTMLResponse(content=_UPLOAD_TOKEN_IMPORT_PAGE)
     return HTMLResponse(content=_UPLOAD_TOKEN_PAGE)

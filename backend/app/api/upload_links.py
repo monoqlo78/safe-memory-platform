@@ -24,6 +24,7 @@ from app.models.job_schema import job_to_response
 from app.models.upload_link_schema import (
     CreateUploadLinkRequest,
     CreateUploadLinkResponse,
+    ImportedPackInfo,
     UploadLinkClaim,
     UploadLinkResultResponse,
 )
@@ -42,6 +43,34 @@ def _public_base(request: Request) -> str:
 
 def _claim_result(claim: UploadLinkClaim) -> UploadLinkResultResponse:
     """Resolve a claim to its current, path-safe result view."""
+    mode = getattr(claim, "mode", "build") or "build"
+
+    # Import mode: several packs may be registered under the claim's ephemeral
+    # namespace. Return the safe summaries so the LLM knows what to query.
+    if mode == "import":
+        imported = [
+            ImportedPackInfo(
+                agent_id=item.get("agent_id", ""),
+                pack_id=item.get("pack_id", ""),
+                entry_count=int(item.get("entry_count", 0) or 0),
+                classifications=dict(item.get("classifications", {}) or {}),
+                verified=bool(item.get("verified", False)),
+            )
+            for item in (claim.imported or [])
+        ]
+        if claim.is_expired():
+            status = "EXPIRED"
+        elif imported:
+            status = "COMPLETED"
+        else:
+            status = "PENDING"
+        return UploadLinkResultResponse(
+            status=status,
+            claim_id=claim.claim_id,
+            mode="import",
+            imported=imported,
+        )
+
     if claim.job_id:
         job = jobs_store.load_job(claim.job_id)
         if job is not None:
@@ -55,9 +84,10 @@ def _claim_result(claim: UploadLinkClaim) -> UploadLinkResultResponse:
                 entry_count=view.entry_count,
                 input_type=view.input_type,
                 unsupported_files=view.unsupported_files,
+                mode="build",
             )
     status = "EXPIRED" if claim.is_expired() else "PENDING"
-    return UploadLinkResultResponse(status=status, claim_id=claim.claim_id)
+    return UploadLinkResultResponse(status=status, claim_id=claim.claim_id, mode="build")
 
 
 @router.post(
@@ -67,10 +97,11 @@ def _claim_result(claim: UploadLinkClaim) -> UploadLinkResultResponse:
     include_in_schema=True,
     summary="Create a one-time, keyless upload link",
     description=(
-        "Mint a single-use upload URL a person can open with no login or API "
-        "key to drop a folder or files. Returns upload_url, claim_id, and "
-        "expires_at. Share upload_url with the user, then poll "
-        "getUploadLinkResult with claim_id until it is COMPLETED."
+        "Mint a single-use upload URL a person opens with no login or API key "
+        "to drop files. Returns upload_url, claim_id, expires_at. Share it, "
+        "then poll getUploadLinkResult with claim_id until COMPLETED. Set "
+        "mode=import to upload finished .smp.json packs into a private "
+        "temporary space instead of building."
     ),
 )
 def create_upload_link(
@@ -78,6 +109,10 @@ def create_upload_link(
 ) -> CreateUploadLinkResponse:
     """Create a scoped one-time upload link and return its public URL."""
     token = upload_links.new_token()
+    mode = "import" if (req.mode or "build").strip().lower() == "import" else "build"
+    # Import-mode links register finished packs into a private, unguessable,
+    # TTL-expired namespace; they never touch the shared server vault.
+    import_agent_id = upload_links.new_import_agent_id() if mode == "import" else None
     claim = UploadLinkClaim(
         claim_id=upload_links.new_claim_id(),
         token=token,
@@ -90,6 +125,8 @@ def create_upload_link(
         default_classification=req.classification or "internal",
         expires_at=upload_links.compute_expires_at(req.expires_in_seconds),
         max_uses=max(1, int(req.max_uses or 1)),
+        mode=mode,
+        import_agent_id=import_agent_id,
     )
     upload_links.save_claim(claim)
 
@@ -98,6 +135,7 @@ def create_upload_link(
         upload_url=upload_url,
         claim_id=claim.claim_id,
         expires_at=claim.expires_at,
+        mode=mode,
     )
 
 

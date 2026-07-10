@@ -45,6 +45,17 @@ class UploadLinkClaim(BaseModel):
     uses_consumed: int = 0
     job_id: Optional[str] = None
 
+    # "build" (default) merges raw source files into one new pack; "import"
+    # registers already-built .smp.json packs into an ephemeral, claim-scoped
+    # namespace (import_agent_id) with TTL auto-cleanup.
+    mode: str = "build"
+    # Unguessable, per-claim agent namespace used only in import mode. Imported
+    # packs live here (never in the shared server vault) and are TTL-expired.
+    import_agent_id: Optional[str] = None
+    # Packs imported via this link (import mode). Returned to the authenticated
+    # LLM by getUploadLinkResult so it knows which agent_id/pack_id to query.
+    imported: List[Dict] = Field(default_factory=list)
+
     def is_expired(self, now: Optional[datetime] = None) -> bool:
         now = now or datetime.now(timezone.utc)
         try:
@@ -71,6 +82,9 @@ class CreateUploadLinkRequest(BaseModel):
     classification: str = "internal"
     expires_in_seconds: int = 1800
     max_uses: int = 1
+    # "build" (default) = drop raw files, build one new pack. "import" = upload
+    # already-built .smp.json packs into a private, temporary, per-link namespace.
+    mode: str = "build"
 
 
 class CreateUploadLinkResponse(BaseModel):
@@ -79,6 +93,17 @@ class CreateUploadLinkResponse(BaseModel):
     upload_url: str
     claim_id: str
     expires_at: str
+    mode: str = "build"
+
+
+class ImportedPackInfo(BaseModel):
+    """One pack imported via an import-mode one-time link (safe to return)."""
+
+    agent_id: str
+    pack_id: str
+    entry_count: int = 0
+    classifications: Dict[str, int] = Field(default_factory=dict)
+    verified: bool = False
 
 
 class UploadLinkResultResponse(BaseModel):
@@ -92,3 +117,6 @@ class UploadLinkResultResponse(BaseModel):
     entry_count: Optional[int] = None
     input_type: Optional[str] = None
     unsupported_files: List[Dict[str, str]] = Field(default_factory=list)
+    # Import-mode fields: the LLM queries these packs by agent_id + pack_id.
+    mode: str = "build"
+    imported: List[ImportedPackInfo] = Field(default_factory=list)
