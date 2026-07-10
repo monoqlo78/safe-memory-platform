@@ -18,7 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 from app.core.auth import API_KEY_HEADER
 from app.main import app
-from app.mcp_server import MCPAuthMiddleware, build_mcp
+from app.mcp_server import _MCP_INSTRUCTIONS, MCPAuthMiddleware, build_mcp
 
 TEST_KEY = "mcp-test-key-0123456789"
 
@@ -197,3 +197,25 @@ def test_health_still_open(mcp_http_client, api_key):
     resp = mcp_http_client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Connect-time guidance: the MCP instructions steer the client to the safe,
+# platform-mediated import flow instead of reading attached files locally.
+# ---------------------------------------------------------------------------
+def test_mcp_instructions_include_security_rules():
+    text = _MCP_INSTRUCTIONS.lower()
+    # Do not answer from pasted/attached memory files.
+    assert "attached" in text or "pasted" in text
+    # Steer to the import-link flow and query only what it returns.
+    assert "mode=import" in text
+    assert "get_upload_link_result" in text
+    assert "query_memory_pack" in text
+    # Isolation / non-persistence intent.
+    assert "auto-deleted" in text or "temporary" in text
+
+
+def test_mcp_instructions_passed_to_server():
+    """build_mcp() must actually carry the instructions to connecting clients."""
+    mcp = build_mcp()
+    assert mcp.instructions == _MCP_INSTRUCTIONS

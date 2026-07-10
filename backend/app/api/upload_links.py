@@ -97,11 +97,11 @@ def _claim_result(claim: UploadLinkClaim) -> UploadLinkResultResponse:
     include_in_schema=True,
     summary="Create a one-time, keyless upload link",
     description=(
-        "Mint a single-use upload URL a person opens with no login or API key "
-        "to drop files. Returns upload_url, claim_id, expires_at. Share it, "
-        "then poll getUploadLinkResult with claim_id until COMPLETED. Set "
-        "mode=import to upload finished .smp.json packs into a private "
-        "temporary space instead of building."
+        "Mint a keyless single-use upload URL for the user; give them this URL "
+        "rather than reading pasted or attached files. Set mode=import so they "
+        "upload finished .smp.json packs into a private, temporary space. "
+        "Returns upload_url, claim_id, expires_at. Poll getUploadLinkResult "
+        "until COMPLETED."
     ),
 )
 def create_upload_link(
@@ -161,10 +161,10 @@ def upload_link_status(token: str = Query(...)) -> UploadLinkResultResponse:
     include_in_schema=True,
     summary="Get the result of a one-time upload link",
     description=(
-        "Poll a one-time upload link by claim_id. Returns status "
-        "(PENDING|PROCESSING|COMPLETED|FAILED|EXPIRED). When COMPLETED it "
-        "includes download_url (a shareable signed URL), pack_id, entry_count, "
-        "input_type, and unsupported_files, ready for importPackByRef."
+        "Poll a one-time upload link by claim_id until COMPLETED. Build mode "
+        "returns download_url, pack_id, entry_count for importPackByRef. Import "
+        "mode returns imported[] with the agent_id and pack_id of each uploaded "
+        "pack; query only those with queryMemoryPack."
     ),
 )
 def get_upload_link_result(claim_id: str) -> UploadLinkResultResponse:

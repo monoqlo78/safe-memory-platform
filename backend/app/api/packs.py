@@ -291,11 +291,11 @@ def build_pack(req: BuildPackRequest) -> BuildPackResponse:
     operation_id="queryMemoryPack",
     summary="Query a Safe Memory Pack",
     description=(
-        "Answer a natural-language question over a Safe Memory Pack using hybrid "
-        "(embedding + keyword) search plus Qwen reasoning. Safe: SECRET is never "
-        "returned or sent to the LLM; original private text only when "
-        "include_private=true. Identify the pack with pack_id (preferred) or "
-        "pack_path."
+        "Answer a natural-language question over a Safe Memory Pack using "
+        "hybrid (embedding + keyword) search plus Qwen reasoning. SECRET is "
+        "never returned or sent to the LLM; private text only with "
+        "include_private=true. Use the agent_id and pack_id from "
+        "getUploadLinkResult (or a known pack_id)."
     ),
 )
 def query_pack(req: QueryRequest) -> QueryResponse:

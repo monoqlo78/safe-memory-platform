@@ -295,3 +295,33 @@ def test_upload_link_operation_ids_still_visible(client):
     # The internal import endpoint stays hidden.
     assert "importMemoryPackFromUploadRef" not in op_ids
     assert "/api/packs/import-from-upload-ref" not in spec["paths"]
+
+
+def _descriptions_by_op(spec):
+    out = {}
+    for path in spec["paths"].values():
+        for op in path.values():
+            if isinstance(op, dict) and op.get("operationId"):
+                out[op["operationId"]] = op.get("description", "")
+    return out
+
+
+def test_action_descriptions_embed_import_flow_guidance(client):
+    """GPT Actions have no connect-time instructions, so the flow lives in the
+    operation descriptions (and each stays within the 300-char GPT limit)."""
+    desc = _descriptions_by_op(client.get("/openapi.json").json())
+
+    create = desc["createUploadLink"]
+    assert "mode=import" in create
+    assert "attached" in create.lower() or "pasted" in create.lower()
+
+    result = desc["getUploadLinkResult"]
+    assert "imported" in result.lower()
+    assert "agent_id" in result and "pack_id" in result
+
+    query = desc["queryMemoryPack"]
+    assert "getUploadLinkResult" in query
+
+    for op_id in ("createUploadLink", "getUploadLinkResult", "queryMemoryPack"):
+        assert len(desc[op_id]) <= 300, f"{op_id} description over 300 chars"
+

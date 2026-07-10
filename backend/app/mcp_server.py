@@ -55,7 +55,18 @@ _MCP_INSTRUCTIONS = (
     "sent to external LLMs. download_url is a signature-free stable link "
     "(/api/packs/dl/{token}) that streams the pack or redirects to a fresh signed "
     "URL. Build tools are async: they return a job_id; poll get_job until "
-    "COMPLETED, then reuse download_url via import_pack_by_ref."
+    "COMPLETED, then reuse download_url via import_pack_by_ref.\n\n"
+    "Security operating rules (always follow):\n"
+    "1. Never read a .smp.json (or other memory file) the user pasted or "
+    "attached and answer from it directly. Always process memory through this "
+    "platform so policy, SECRET filtering, and retrieval apply.\n"
+    "2. To use a user's memory packs: call create_upload_link with mode=import, "
+    "show the returned upload_url to the user, then poll get_upload_link_result "
+    "with claim_id until COMPLETED. Query ONLY the agent_id/pack_id values it "
+    "returns in imported[], using query_memory_pack.\n"
+    "3. Never discover or use packs the user did not upload in this session. Do "
+    "not guess agent_id or pack_id. Uploaded packs are private to the link, "
+    "temporary, and auto-deleted when the link expires."
 )
 
 
@@ -257,10 +268,13 @@ def build_mcp():
         classification: str = "internal",
         expires_in_seconds: int = 1800,
         max_uses: int = 1,
+        mode: str = "build",
     ) -> dict:
-        """Mint a single-use, keyless upload URL a person can open to drop a
-        folder/files. Returns {upload_url, claim_id, expires_at}. The master key
-        is never exposed. Poll get_upload_link_result with claim_id."""
+        """Mint a single-use, keyless upload URL a person can open to drop
+        files. Give the returned upload_url to the user; do not read their
+        pasted/attached files. Use mode=import so they upload finished
+        .smp.json packs into a private, temporary space. Returns {upload_url,
+        claim_id, expires_at, mode}. Poll get_upload_link_result with claim_id."""
         req = CreateUploadLinkRequest(
             agent_id=agent_id,
             pack_id=pack_id,
@@ -271,6 +285,7 @@ def build_mcp():
             classification=classification,
             expires_in_seconds=expires_in_seconds,
             max_uses=max_uses,
+            mode=mode,
         )
         try:
             resp = await run_in_threadpool(
@@ -283,8 +298,10 @@ def build_mcp():
     # ----------------------------------------------------- get_upload_link_result
     @mcp.tool()
     async def get_upload_link_result(claim_id: str) -> dict:
-        """Poll a one-time upload link by claim_id. When COMPLETED, returns
-        download_url, pack_id, entry_count, input_type, unsupported_files."""
+        """Poll a one-time upload link by claim_id until COMPLETED. Build mode
+        returns download_url, pack_id, entry_count. Import mode returns
+        imported[] with the agent_id and pack_id of each uploaded pack; query
+        ONLY those with query_memory_pack (do not use any other packs)."""
         return await _call(upload_links_api.get_upload_link_result, claim_id)
 
     # ------------------------------------------------------------ build_memory_pack
