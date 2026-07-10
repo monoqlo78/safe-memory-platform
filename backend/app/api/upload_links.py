@@ -113,6 +113,11 @@ def create_upload_link(
     # Import-mode links register finished packs into a private, unguessable,
     # TTL-expired namespace; they never touch the shared server vault.
     import_agent_id = upload_links.new_import_agent_id() if mode == "import" else None
+    # Ensure an import link outlives a multi-pack session (never expires while
+    # the assistant is still querying the uploaded packs).
+    expires_in = int(req.expires_in_seconds or upload_links.DEFAULT_EXPIRES_IN_SECONDS)
+    if mode == "import":
+        expires_in = max(expires_in, upload_links.IMPORT_DEFAULT_EXPIRES_IN_SECONDS)
     claim = UploadLinkClaim(
         claim_id=upload_links.new_claim_id(),
         token=token,
@@ -123,7 +128,7 @@ def create_upload_link(
         canonical_language=req.canonical_language or "en",
         retention_mode=req.retention_mode or "process_and_return",
         default_classification=req.classification or "internal",
-        expires_at=upload_links.compute_expires_at(req.expires_in_seconds),
+        expires_at=upload_links.compute_expires_at(expires_in),
         max_uses=max(1, int(req.max_uses or 1)),
         mode=mode,
         import_agent_id=import_agent_id,

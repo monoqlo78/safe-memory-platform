@@ -23,8 +23,12 @@ from app.models.upload_link_schema import UploadLinkClaim
 logger = logging.getLogger("safe_memory.upload_links")
 
 # Hard cap on how long a one-time link may live (defence in depth).
-MAX_EXPIRES_IN_SECONDS = 3600
+MAX_EXPIRES_IN_SECONDS = 7200
 DEFAULT_EXPIRES_IN_SECONDS = 1800
+# Import-mode links must outlast a full demo session: the user uploads several
+# packs and the assistant then queries them one by one. Floor the TTL so a pack
+# never expires mid-session (still capped by MAX_EXPIRES_IN_SECONDS).
+IMPORT_DEFAULT_EXPIRES_IN_SECONDS = 3600
 
 
 def _utcnow() -> datetime:

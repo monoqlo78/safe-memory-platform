@@ -124,6 +124,15 @@ def test_build_mode_is_default(client, auth):
     assert resp.json()["mode"] == "build"
 
 
+def test_import_link_default_ttl_covers_a_session(client, auth):
+    """An import link must outlast a multi-pack session (>= ~60 min by default)."""
+    link = _create_import_link(client, auth)  # no expires_in_seconds override
+    expires = datetime.fromisoformat(link["expires_at"])
+    now = datetime.now(timezone.utc)
+    remaining = (expires - now).total_seconds()
+    assert remaining >= 3600 - 120, remaining  # ~60 min, allowing test slack
+
+
 # ---------------------------------------------------------------------------
 # Import -> result listing -> queryable
 # ---------------------------------------------------------------------------
